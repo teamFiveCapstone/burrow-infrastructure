@@ -1,5 +1,6 @@
 Repository: ragline-infrastructure
-Prerequisite (input variables) 
+Prerequisite (input variables)
+
 # VPC, 2 public subnets, 2 private subnets
 
 ```

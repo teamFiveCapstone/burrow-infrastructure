@@ -12,3 +12,13 @@ variable "vpc_id" {
   description = "ID of the VPC"
   type        = string
 }
+
+variable "private_subnet_1_id" {
+  description = "ID of the az1 private subnet"
+  type        = string
+}
+
+variable "private_subnet_2_id" {
+  description = "ID of the az2 private subnet"
+  type        = string
+}

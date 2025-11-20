@@ -562,23 +562,25 @@ resource "aws_cloudwatch_event_target" "ecs_task_target" {
       detail_bucket_name = "$.detail.bucket.name"
       detail_object_key  = "$.detail.object.key"
     }
-    input_template = jsonencode({
-      containerOverrides = [
+    input_template = <<-EOT
+{
+  "containerOverrides": [
+    {
+      "name": "ingestion-container",
+      "environment": [
         {
-          environment = [
-            {
-              name  = "S3_BUCKET_NAME"
-              value = "<detail_bucket_name>"
-            },
-            {
-              name  = "S3_OBJECT_KEY"
-              value = "<detail_object_key>"
-            }
-          ]
-          name = "ingestion-container"
+          "name": "S3_BUCKET_NAME",
+          "value": "<detail_bucket_name>"
+        },
+        {
+          "name": "S3_OBJECT_KEY",
+          "value": "<detail_object_key>"
         }
       ]
-    })
+    }
+  ]
+}
+EOT
   }
 }
 
@@ -640,7 +642,7 @@ resource "aws_ecs_task_definition" "ingestion-terraform" {
   container_definitions = jsonencode([
     {
       name      = "ingestion-container"
-      image     = "908860991626.dkr.ecr.us-east-1.amazonaws.com/ingest-opensearch@sha256:5f83ee96ebb1da3bb54dd74a9ef414b69e15362107f84e12fa855afc9e88fef2"
+      image     = "908860991626.dkr.ecr.us-east-1.amazonaws.com/ingest-opensearch:latest"
       essential = true
       portMappings = [
         {

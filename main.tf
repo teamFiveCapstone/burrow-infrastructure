@@ -204,7 +204,7 @@ resource "aws_ecs_task_definition" "service" {
         },
         {
           name  = "S3_BUCKET_NAME"
-          value = "wild-cats-pipeline"
+          value = aws_s3_bucket.bucket.id
         },
         {
           name  = "DYNAMODB_TABLE_USERS"
@@ -283,7 +283,7 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
           "s3:PutObject",
           "s3:PutObjectAcl"
         ]
-        Resource = "arn:aws:s3:::wild-cats-pipeline/*"
+        Resource = "${aws_s3_bucket.bucket.arn}/*"
       },
       {
         Effect = "Allow"
@@ -297,8 +297,71 @@ resource "aws_iam_role_policy" "ecs_task_policy" {
         Resource = [
           "arn:aws:dynamodb:us-east-1:908860991626:table/documents*",
           "arn:aws:dynamodb:us-east-1:908860991626:table/users*",
-          "arn:aws:dynamodb:us-east-1:908860991626:table/please"
         ]
+      }
+    ]
+  })
+}
+
+# IAM Role for Ingestion ECS Task
+resource "aws_iam_role" "ingestion_task_role" {
+  name = "ingestion-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "ingestion-task-role"
+  }
+}
+
+# IAM Policy for Ingestion ECS Task
+resource "aws_iam_role_policy" "ingestion_task_policy" {
+  name = "ingestion-task-policy"
+  role = aws_iam_role.ingestion_task_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "S3Access"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.bucket.arn,
+          "${aws_s3_bucket.bucket.arn}/*"
+        ]
+      },
+      {
+        Sid    = "SecretsManagerAccess"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "BedrockAccess"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -346,6 +409,16 @@ resource "aws_cloudwatch_log_group" "ecs_service" {
 
   tags = {
     Name = "ecs-service-logs"
+  }
+}
+
+# CloudWatch Log Group for ingestion tasks
+resource "aws_cloudwatch_log_group" "ingestion_terraform" {
+  name              = "/ecs/ingestion-terraform"
+  retention_in_days = 7
+
+  tags = {
+    Name = "ingestion-terraform-logs"
   }
 }
 
@@ -433,4 +506,168 @@ resource "aws_ecs_service" "management-api-service" {
     assign_public_ip = false
     security_groups  = [aws_security_group.ecs_service.id]
   } 
+}
+
+resource "aws_s3_bucket" "bucket" {
+  bucket = "rag-pipeline-documents-${lower(random_id.s3-bucket-suffix.id)}"
+}
+
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket      = aws_s3_bucket.bucket.id
+  eventbridge = true
+}
+
+resource "random_id" "s3-bucket-suffix" {
+  byte_length = 4
+}
+
+
+resource "aws_cloudwatch_event_rule" "s3_object_created_rule" {
+  name          = "s3-object-created-rule"
+  description   = "Rule to capture S3 object creation events"
+  event_bus_name = "default" 
+
+  event_pattern = jsonencode({
+    source      = ["aws.s3"]
+    detail-type = ["Object Created"]
+    detail = {
+      bucket = {
+        name = [aws_s3_bucket.bucket.id]
+      }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "ecs_task_target" {
+  rule      = aws_cloudwatch_event_rule.s3_object_created_rule.name
+  target_id = "TriggerECSTask"
+  arn       = aws_ecs_cluster.management-api-cluster.arn
+  role_arn  = aws_iam_role.eventbridge_ecs_role.arn
+
+  ecs_target {
+    task_count          = 1
+    task_definition_arn = aws_ecs_task_definition.ingestion-terraform.arn
+    launch_type         = "FARGATE"
+    platform_version    = "LATEST"
+
+    network_configuration {
+      subnets          = [var.private_subnet_1_id, var.private_subnet_2_id]
+      assign_public_ip = false
+      security_groups  = [aws_security_group.ecs_service.id]
+    }
+  }
+
+  input_transformer {
+    input_paths = {
+      detail_bucket_name = "$.detail.bucket.name"
+      detail_object_key  = "$.detail.object.key"
+    }
+    input_template = <<-EOT
+{
+  "containerOverrides": [
+    {
+      "name": "ingestion-container",
+      "environment": [
+        {
+          "name": "S3_BUCKET_NAME",
+          "value": "<detail_bucket_name>"
+        },
+        {
+          "name": "S3_OBJECT_KEY",
+          "value": "<detail_object_key>"
+        }
+      ]
+    }
+  ]
+}
+EOT
+  }
+}
+
+resource "aws_iam_role" "eventbridge_ecs_role" {
+  name = "eventbridge-ecs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name = "eventbridge-ecs-role"
+  }
+}
+
+resource "aws_iam_role_policy" "eventbridge_ecs_policy" {
+  name = "eventbridge-ecs-policy"
+  role = aws_iam_role.eventbridge_ecs_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:RunTask"
+        ]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = "iam:PassRole"
+        Resource = ["*"]
+        Condition = {
+          StringLike = {
+            "iam:PassedToService" = "ecs-tasks.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_ecs_task_definition" "ingestion-terraform" {
+  family                   = "ingestion-terraform"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 2048
+  memory                   = 5120
+  container_definitions = jsonencode([
+    {
+      name      = "ingestion-container"
+      image     = "908860991626.dkr.ecr.us-east-1.amazonaws.com/ingest-opensearch:latest"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 80
+          protocol      = "tcp"
+          appProtocol   = "http"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/ingestion-terraform"
+          "awslogs-create-group"  = "true"
+          "awslogs-region"        = "us-east-1"
+          "awslogs-stream-prefix" = "ecs"
+        }
+      }
+    }
+  ])
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  task_role_arn      = aws_iam_role.ingestion_task_role.arn
+  execution_role_arn = aws_iam_role.ecs_execution_role.arn
 }

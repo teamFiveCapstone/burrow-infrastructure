@@ -208,7 +208,7 @@ resource "aws_ecs_task_definition" "service" {
         },
         {
           name  = "DYNAMODB_TABLE_USERS"
-          value = "users"
+          value = "users-terraform"
         } 
       ]
       secrets = [

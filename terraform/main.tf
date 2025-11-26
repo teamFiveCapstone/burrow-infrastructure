@@ -164,7 +164,7 @@ resource "aws_ecs_task_definition" "management-api" {
   container_definitions = jsonencode([
     {
       name  = "management-api"
-      image = "908860991626.dkr.ecr.us-east-1.amazonaws.com/ragline-backend:latest"
+      image = "docker.io/burrowai/management-api:main"
       portMappings = [
         {
           containerPort = 3000
@@ -615,7 +615,7 @@ resource "aws_ecs_task_definition" "ingestion-terraform" {
   container_definitions = jsonencode([
     {
       name      = "ingestion-container"
-      image     = "908860991626.dkr.ecr.us-east-1.amazonaws.com/ingest-opensearch:latest"
+      image     = "docker.io/burrowai/ingestion-task:main"
       essential = true
       portMappings = [
         {
@@ -871,7 +871,7 @@ resource "aws_ecs_task_definition" "query_api" {
   container_definitions = jsonencode([
     {
       name      = "query-api"
-      image     = "908860991626.dkr.ecr.us-east-1.amazonaws.com/query-api-test"
+      image     = "docker.io/burrowai/query-api:main"
       essential = true
       portMappings = [
         {

@@ -1085,7 +1085,7 @@ resource "aws_cloudfront_distribution" "burrow" {
 
   default_cache_behavior {
     target_origin_id       = "s3-frontend-origin"
-    viewer_protocol_policy = "allow-all"
+    viewer_protocol_policy = "redirect-to-https"
 
     allowed_methods = ["GET", "HEAD"]
     cached_methods  = ["GET", "HEAD"]
@@ -1243,39 +1243,39 @@ output "front-end-bucket" {
   value       = aws_s3_bucket.frontend.bucket
 }
 
-# #--------Copying Dist to bucket on apply--------
-# locals {
-#   frontend_dir   = "${path.module}/dist"
-#   frontend_files = fileset(local.frontend_dir, "**")
+#--------Copying Dist to bucket on apply--------
+locals {
+  frontend_dir   = "${path.module}/dist"
+  frontend_files = fileset(local.frontend_dir, "**")
 
-#   mime_types = {
-#     html = "text/html"
-#     js   = "text/javascript"
-#     css  = "text/css"
-#     svg  = "image/svg+xml"
-#     json = "application/json"
-#     png  = "image/png"
-#     jpg  = "image/jpeg"
-#     jpeg = "image/jpeg"
-#     ico  = "image/x-icon"
-#     map  = "application/json"
-#   }
-# }
+  mime_types = {
+    html = "text/html"
+    js   = "text/javascript"
+    css  = "text/css"
+    svg  = "image/svg+xml"
+    json = "application/json"
+    png  = "image/png"
+    jpg  = "image/jpeg"
+    jpeg = "image/jpeg"
+    ico  = "image/x-icon"
+    map  = "application/json"
+  }
+}
 
-# resource "aws_s3_object" "frontend_files" {
-#   for_each = local.frontend_files
+resource "aws_s3_object" "frontend_files" {
+  for_each = local.frontend_files
 
-#   bucket = aws_s3_bucket.frontend.bucket
-#   key    = each.value
-#   source = "${local.frontend_dir}/${each.value}"
-#   etag   = filemd5("${local.frontend_dir}/${each.value}")
+  bucket = aws_s3_bucket.frontend.bucket
+  key    = each.value
+  source = "${local.frontend_dir}/${each.value}"
+  etag   = filemd5("${local.frontend_dir}/${each.value}")
 
-#   # Grab the file extension and look up the content-type
-#   content_type = lookup(
-#     local.mime_types,
-#     # take the last segment after the dot: e.g. "index.html" -> "html"
-#     element(split(".", each.value), length(split(".", each.value)) - 1),
-#     "binary/octet-stream"
-#   )
-# }
+  # Grab the file extension and look up the content-type
+  content_type = lookup(
+    local.mime_types,
+    # take the last segment after the dot: e.g. "index.html" -> "html"
+    element(split(".", each.value), length(split(".", each.value)) - 1),
+    "binary/octet-stream"
+  )
+}
 

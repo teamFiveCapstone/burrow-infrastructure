@@ -1105,7 +1105,7 @@ resource "aws_cloudfront_distribution" "burrow" {
 
   default_cache_behavior {
     target_origin_id       = "s3-frontend-origin"
-    viewer_protocol_policy = "allow-all"
+    viewer_protocol_policy = "redirect-to-https"
 
     allowed_methods = ["GET", "HEAD"]
     cached_methods  = ["GET", "HEAD"]
@@ -1238,6 +1238,29 @@ resource "aws_lb_listener_rule" "query_api_rule" {
       values = ["/query-service/*"]
     }
   }
+}
+
+output "admin-password" {
+  description = "Admin password for ragline application"
+  value       = random_password.admin-password.result
+  sensitive   = true
+}
+
+
+output "query-api-token" {
+  description = "API token for query service"
+  value       = random_password.query_api_token.result
+  sensitive   = true
+}
+
+output "cloudfront-dns-record" {
+  description = "DNS record for Cloudfront"
+  value       = aws_cloudfront_distribution.burrow.domain_name
+}
+
+output "front-end-bucket" {
+  description = "Bucket for the UI"
+  value       = aws_s3_bucket.frontend.bucket
 }
 
 #--------Copying Dist to bucket on apply--------

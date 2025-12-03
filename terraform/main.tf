@@ -544,6 +544,16 @@ resource "aws_cloudwatch_event_target" "ecs_task_target" {
 }
 EOT
   }
+  #Zach Added Retry logic 
+  retry_policy {
+    maximum_retry_attempts       = 5
+    maximum_event_age_in_seconds = 3600
+  }
+
+  #Zach Added dead letter queue
+  dead_letter_config {
+    arn = aws_sqs_queue.eventbridge_dlq.arn
+  }
 }
 
 resource "aws_cloudwatch_event_rule" "s3_object_deleted_rule" {
@@ -610,6 +620,16 @@ resource "aws_cloudwatch_event_target" "ecs_task_delete_target" {
   ]
 }
 EOT
+  }
+  #Zach Added Retry logic 
+  retry_policy {
+    maximum_retry_attempts       = 5
+    maximum_event_age_in_seconds = 3600
+  }
+
+  #Zach Added dead letter queue
+  dead_letter_config {
+    arn = aws_sqs_queue.eventbridge_dlq.arn
   }
 }
 
@@ -1256,3 +1276,121 @@ resource "aws_s3_object" "frontend_files" {
   )
 }
 
+#------ZACH Adding stuff for Dead Letter Queue-------
+
+# Created dead letter queue
+resource "aws_sqs_queue" "eventbridge_dlq" {
+  name = "burrow-eventbridge-dlq"
+
+  message_retention_seconds = 1209600
+
+  tags = {
+    Name = "burrow-eventbridge-dlq"
+  }
+}
+
+# Created SQS Queue policy
+resource "aws_sqs_queue_policy" "eventbridge_dlq_policy" {
+  queue_url = aws_sqs_queue.eventbridge_dlq.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowEventBridgeToSendMessages"
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.eventbridge_dlq.arn
+      }
+    ]
+  })
+}
+
+# Created iam role for DLQ Lambda
+resource "aws_iam_role" "eventbridge_dlq_lambda_role" {
+  name = "eventbridge-dlq-lambda-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+# Created policy for DLQ Lamabda 
+resource "aws_iam_role_policy" "eventbridge_dlq_lambda_all" {
+  name = "eventbridge-dlq-lambda-all"
+  role = aws_iam_role.eventbridge_dlq_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "SqsDlqAccess"
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:ChangeMessageVisibility"
+        ]
+        Resource = aws_sqs_queue.eventbridge_dlq.arn
+      },
+      {
+        Sid    = "ReadIngestionApiToken"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = aws_secretsmanager_secret.ingestion-api-token.arn
+      }
+    ]
+  })
+}
+
+# Point the lambda function at the zip file
+resource "aws_lambda_function" "eventbridge_dlq_handler" {
+  function_name = "burrow-eventbridge-dlq-handler"
+  role          = aws_iam_role.eventbridge_dlq_lambda_role.arn
+
+  runtime = "python3.12"
+  handler = "eventbridge_dlq_handler.handler"
+
+  filename         = "lambda/eventbridge_dlq_handler.zip"
+  source_code_hash = filebase64sha256("lambda/eventbridge_dlq_handler.zip")
+
+  timeout     = 30
+  memory_size = 256
+
+  environment {
+    variables = {
+      ALB_BASE_URL            = "http://${aws_lb.burrow.dns_name}"
+      DOCS_API_PATH           = "/api/documents"
+      INGESTION_API_TOKEN_ARN = aws_secretsmanager_secret.ingestion-api-token.arn
+    }
+  }
+}
+
+# Make Lambda auto process messages from DLQ
+resource "aws_lambda_event_source_mapping" "eventbridge_dlq_to_lambda" {
+  event_source_arn = aws_sqs_queue.eventbridge_dlq.arn
+  function_name    = aws_lambda_function.eventbridge_dlq_handler.arn
+  batch_size       = 10
+}

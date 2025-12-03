@@ -1417,3 +1417,37 @@ resource "aws_lambda_event_source_mapping" "eventbridge_dlq_to_lambda" {
   function_name    = aws_lambda_function.eventbridge_dlq_handler.arn
   batch_size       = 10
 }
+
+#---------New--------
+
+# Event rule for ecs task stop 
+resource "aws_cloudwatch_event_rule" "ecs_task_failed_rule" {
+  name           = "ecs-task-failed-rule"
+  description    = "Failed ingestion ECS tasks (STOPPED with non-zero exitCode)"
+  event_bus_name = "default"
+
+  event_pattern = jsonencode({
+    "source" : ["aws.ecs"],
+    "detail-type" : ["ECS Task State Change"],
+    "detail" : {
+      "clusterArn" : [aws_ecs_cluster.management-api-cluster.arn],
+
+      "group" : ["family:ingestion-terraform"],
+
+      "lastStatus" : ["STOPPED"],
+
+      "containers" : {
+        "exitCode" : [{
+          "anything-but" : 0
+        }]
+      }
+    }
+  })
+}
+
+# Target for the Event
+resource "aws_cloudwatch_event_target" "ecs_task_failed_to_sqs" {
+  rule      = aws_cloudwatch_event_rule.ecs_task_failed_rule.name
+  target_id = "SendFailedIngestionTasksToSqs"
+  arn       = aws_sqs_queue.eventbridge_dlq.arn
+}

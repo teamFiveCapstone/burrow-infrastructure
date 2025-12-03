@@ -9,8 +9,80 @@ TOKEN_SECRET_ARN = os.environ["INGESTION_API_TOKEN_ARN"]
 secrets_client = boto3.client("secretsmanager")
 
 def get_ingestion_token():
-    resp = secrets_client.get_secret_value(SecretId=TOKEN_SECRET_ARN)
-    return resp["SecretString"]
+    return secrets_client.get_secret_value(SecretId=TOKEN_SECRET_ARN)["SecretString"]
+
+def get_key_and_event_type(overrides):
+    if not overrides:
+        return None, None
+
+    env_list = overrides[0].get("environment", [])
+    env_map = {item.get("name"): item.get("value") for item in env_list}
+
+    return env_map.get("S3_OBJECT_KEY"), env_map.get("EVENT_TYPE")
+
+def status_from_event_type(event_type):
+    if event_type == "Object Created":
+        return "failed"
+    if event_type == "Object Deleted":
+        return "delete_failed"
+    return None
+
+def patch_status(document_id, status, token):
+    url = f"{ALB_BASE_URL}{DOCS_API_PATH}/{document_id}"
+    body = json.dumps({"status": status}).encode("utf-8")
+
+    req = request.Request(url, data=body, method="PATCH")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-api-token", token)
+
+    print(f"[PATCH] {url} → {status}")
+
+    try:
+        resp = request.urlopen(req, timeout=30)
+        resp_body = resp.read().decode("utf-8", "replace")
+        print("Response:", resp.getcode(), resp_body)
+    except error.HTTPError as e:
+        err_body = e.read().decode("utf-8", "replace")
+        print("HTTPError:", e.code, err_body)
+        raise
+    except error.URLError as e:
+        print("URLError:", e)
+        raise
+
+
+def handle_run_task_dlq(payload, token):
+    key, event_type = get_key_and_event_type(payload.get("containerOverrides", []))
+
+    if not key or not event_type:
+        print("[WARN] Missing S3_OBJECT_KEY or EVENT_TYPE in RunTask payload; skipping")
+        return
+
+    status = status_from_event_type(event_type)
+    if not status:
+        print("[WARN] Unknown EVENT_TYPE in RunTask payload:", event_type)
+        return
+
+    document_id = Path(key).stem
+    patch_status(document_id, status, token)
+
+def handle_ecs_task_failure(payload, token):
+    detail = payload.get("detail", {})
+    overrides = detail.get("overrides", {}).get("containerOverrides", [])
+
+    key, event_type = get_key_and_event_type(overrides)
+
+    if not key or not event_type:
+        print("[WARN] Missing S3_OBJECT_KEY or EVENT_TYPE in ECS detail; skipping")
+        return
+
+    status = status_from_event_type(event_type)
+    if not status:
+        print("[WARN] Unknown EVENT_TYPE in ECS detail:", event_type)
+        return
+
+    document_id = Path(key).stem
+    patch_status(document_id, status, token)
+
 
 def handler(event, context):
     records = event.get("Records", [])
@@ -27,48 +99,16 @@ def handler(event, context):
             print("[WARN] Bad JSON body:", body[:200])
             continue
 
-        overrides = payload.get("containerOverrides", [])
-        if not overrides:
-            print("[WARN] No containerOverrides in payload")
+        detail_type = payload.get("detail-type")
+
+        # 1) Failed ingestion tasks (STOPPED + non-zero exitCode) from ECS rule
+        if detail_type == "ECS Task State Change":
+            handle_ecs_task_failure(payload, token)
             continue
 
-        env_list = overrides[0].get("environment", [])
-        env_map = {item["name"]: item["value"] for item in env_list}
-
-        bucket = env_map.get("S3_BUCKET_NAME")
-        key = env_map.get("S3_OBJECT_KEY")
-        event_type = env_map.get("EVENT_TYPE")
-
-        if not key or not event_type:
-            print("[WARN] Missing S3_OBJECT_KEY or EVENT_TYPE; skipping")
+        # 2) Failed RunTask invocations from EventBridge DLQ
+        if "containerOverrides" in payload:
+            handle_run_task_dlq(payload, token)
             continue
 
-        document_id = Path(key).stem
-
-        if event_type == "Object Created":
-            new_status = "failed"
-        elif event_type == "Object Deleted":
-            new_status = "delete_failed"
-        else:
-            print("[WARN] Unknown EVENT_TYPE:", event_type)
-            continue
-
-        url = f"{ALB_BASE_URL}{DOCS_API_PATH}/{document_id}"
-        data = json.dumps({"status": new_status}).encode("utf-8")
-
-        req = request.Request(url, data=data, method="PATCH")
-        req.add_header("Content-Type", "application/json")
-        req.add_header("x-api-token", token)
-
-        print(f"[PATCH] {url} → {new_status}")
-
-        try:
-            resp = request.urlopen(req, timeout=60)
-            status = resp.getcode()
-            resp_body = resp.read().decode("utf-8", "replace")
-            print("Response:", status, resp_body)
-
-        except error.HTTPError as e:
-            err_body = e.read().decode("utf-8", "replace")
-            print("HTTPError:", e.code, err_body)
-            raise
+        print("[WARN] Unrecognized payload shape; keys:", list(payload.keys()))

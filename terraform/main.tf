@@ -1429,3 +1429,19 @@ resource "aws_cloudwatch_event_target" "ecs_task_failed_to_sqs" {
   target_id = "SendFailedIngestionTasksToSqs"
   arn       = aws_sqs_queue.eventbridge_dlq.arn
 }
+
+#---------------------------------------
+resource "aws_secretsmanager_secret" "pipeline_api_token" {
+  name                    = "ragline/pipeline-api-token"
+  description             = "API token for pipeline-service"
+  recovery_window_in_days = 0
+
+  tags = {
+    Name = "ragline-pipeline-api-token"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "pipeline_api_token_version" {
+  secret_id     = aws_secretsmanager_secret.pipeline_api_token.id
+  secret_string = random_password.pipeline-api-token.result
+}

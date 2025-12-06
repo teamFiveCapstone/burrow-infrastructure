@@ -400,6 +400,12 @@ resource "random_password" "ingestion-api-token" {
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
+resource "random_password" "pipeline-api-token" {
+  length           = 16
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
 resource "aws_secretsmanager_secret" "admin-password" {
   name                    = "ragline/admin-password"
   description             = "Admin password for ragline application"
@@ -544,13 +550,11 @@ resource "aws_cloudwatch_event_target" "ecs_task_target" {
 }
 EOT
   }
-  #Zach Added Retry logic 
   retry_policy {
     maximum_retry_attempts       = 5
     maximum_event_age_in_seconds = 3600
   }
 
-  #Zach Added dead letter queue
   dead_letter_config {
     arn = aws_sqs_queue.eventbridge_dlq.arn
   }
@@ -621,13 +625,11 @@ resource "aws_cloudwatch_event_target" "ecs_task_delete_target" {
 }
 EOT
   }
-  #Zach Added Retry logic 
   retry_policy {
     maximum_retry_attempts       = 5
     maximum_event_age_in_seconds = 3600
   }
 
-  #Zach Added dead letter queue
   dead_letter_config {
     arn = aws_sqs_queue.eventbridge_dlq.arn
   }
@@ -1018,14 +1020,12 @@ resource "aws_vpc_security_group_ingress_rule" "tf_aurora_from_query" {
   ip_protocol                  = "tcp"
 }
 
-#ZACH Created random password for Query Api token
 resource "random_password" "query_api_token" {
   length           = 32
   special          = true
   override_special = "!#$%&*()-_=+[]{}<>:?"
 }
 
-#ZACH Created secret for Query Api token
 resource "aws_secretsmanager_secret" "query_api_token" {
   name                    = "ragline/query-api-token"
   description             = "API token for query-service"
@@ -1036,20 +1036,15 @@ resource "aws_secretsmanager_secret" "query_api_token" {
   }
 }
 
-#ZACH Stored token in the secret
 resource "aws_secretsmanager_secret_version" "query_api_token" {
   secret_id     = aws_secretsmanager_secret.query_api_token.id
   secret_string = random_password.query_api_token.result
 }
 
-#------ZACH Adding stuff for S3 frontend-------
-
-# Created a suffix for bucket so it's unique
 resource "random_id" "frontend_suffix" {
   byte_length = 4
 }
 
-# Created S3 bucket
 resource "aws_s3_bucket" "frontend" {
   bucket        = "burrow-frontend-${random_id.frontend_suffix.hex}"
   force_destroy = true
@@ -1059,7 +1054,6 @@ resource "aws_s3_bucket" "frontend" {
   }
 }
 
-# Block all public access on S3 bucket
 resource "aws_s3_bucket_public_access_block" "frontend" {
   bucket                  = aws_s3_bucket.frontend.id
   block_public_acls       = true
@@ -1068,7 +1062,6 @@ resource "aws_s3_bucket_public_access_block" "frontend" {
   restrict_public_buckets = true
 }
 
-# Created CloudFront OAC
 resource "aws_cloudfront_origin_access_control" "frontend_oac" {
   name                              = "burrow-frontend-oac"
   description                       = "OAC for burrow frontend S3 origin"
@@ -1077,12 +1070,10 @@ resource "aws_cloudfront_origin_access_control" "frontend_oac" {
   signing_protocol                  = "sigv4"
 }
 
-# Created CloudFront distribution
 resource "aws_cloudfront_distribution" "burrow" {
   enabled             = true
   default_root_object = "index.html"
 
-  # S3 origin (frontend)
   origin {
     domain_name = "${aws_s3_bucket.frontend.bucket}.s3.${var.region}.amazonaws.com"
     origin_id   = "s3-frontend-origin"
@@ -1090,7 +1081,6 @@ resource "aws_cloudfront_distribution" "burrow" {
     origin_access_control_id = aws_cloudfront_origin_access_control.frontend_oac.id
   }
 
-  # ALB origin (APIs)
   origin {
     domain_name = aws_lb.burrow.dns_name
     origin_id   = "alb-origin"
@@ -1117,7 +1107,7 @@ resource "aws_cloudfront_distribution" "burrow" {
   ordered_cache_behavior {
     path_pattern           = "/api/*"
     target_origin_id       = "alb-origin"
-    viewer_protocol_policy = "redirect-to-https" 
+    viewer_protocol_policy = "redirect-to-https"
 
     allowed_methods = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
     cached_methods  = ["GET", "HEAD"]
@@ -1160,7 +1150,6 @@ resource "aws_cloudfront_distribution" "burrow" {
   }
 }
 
-# Created bucket policy to only allow CloudFront
 resource "aws_s3_bucket_policy" "frontend" {
   bucket = aws_s3_bucket.frontend.id
 
@@ -1189,7 +1178,6 @@ resource "aws_s3_bucket_policy" "frontend" {
   })
 }
 
-# Updated ALB listener to have a fixed 404 default
 resource "aws_lb_listener" "front_end" {
   load_balancer_arn = aws_lb.burrow.arn
   port              = "80"
@@ -1206,7 +1194,6 @@ resource "aws_lb_listener" "front_end" {
   }
 }
 
-# Created Listener Rule for management-api
 resource "aws_lb_listener_rule" "management_api_rule" {
   listener_arn = aws_lb_listener.front_end.arn
   priority     = 5
@@ -1223,7 +1210,6 @@ resource "aws_lb_listener_rule" "management_api_rule" {
   }
 }
 
-# Created Listener Rule for query-api
 resource "aws_lb_listener_rule" "query_api_rule" {
   listener_arn = aws_lb_listener.front_end.arn
   priority     = 10
@@ -1246,10 +1232,15 @@ output "admin-password" {
   sensitive   = true
 }
 
-
 output "query-api-token" {
   description = "API token for query service"
   value       = random_password.query_api_token.result
+  sensitive   = true
+}
+
+output "pipeline-api-token" {
+  description = "API token for using management API programmatically"
+  value       = random_password.pipeline-api-token.result
   sensitive   = true
 }
 
@@ -1263,7 +1254,6 @@ output "front-end-bucket" {
   value       = aws_s3_bucket.frontend.bucket
 }
 
-#--------Copying Dist to bucket on apply--------
 locals {
   frontend_dir   = "${path.module}/dist"
   frontend_files = fileset(local.frontend_dir, "**")
@@ -1299,9 +1289,6 @@ resource "aws_s3_object" "frontend_files" {
   )
 }
 
-#------ZACH Adding stuff for Dead Letter Queue-------
-
-# Created dead letter queue
 resource "aws_sqs_queue" "eventbridge_dlq" {
   name = "burrow-eventbridge-dlq"
 
@@ -1312,7 +1299,6 @@ resource "aws_sqs_queue" "eventbridge_dlq" {
   }
 }
 
-# Created SQS Queue policy
 resource "aws_sqs_queue_policy" "eventbridge_dlq_policy" {
   queue_url = aws_sqs_queue.eventbridge_dlq.id
 
@@ -1332,7 +1318,6 @@ resource "aws_sqs_queue_policy" "eventbridge_dlq_policy" {
   })
 }
 
-# Created iam role for DLQ Lambda
 resource "aws_iam_role" "eventbridge_dlq_lambda_role" {
   name = "eventbridge-dlq-lambda-role"
 
@@ -1346,7 +1331,6 @@ resource "aws_iam_role" "eventbridge_dlq_lambda_role" {
   })
 }
 
-# Created policy for DLQ Lamabda 
 resource "aws_iam_role_policy" "eventbridge_dlq_lambda_all" {
   name = "eventbridge-dlq-lambda-all"
   role = aws_iam_role.eventbridge_dlq_lambda_role.id
@@ -1388,7 +1372,6 @@ resource "aws_iam_role_policy" "eventbridge_dlq_lambda_all" {
   })
 }
 
-# Point the lambda function at the zip file
 resource "aws_lambda_function" "eventbridge_dlq_handler" {
   function_name = "burrow-eventbridge-dlq-handler"
   role          = aws_iam_role.eventbridge_dlq_lambda_role.arn
@@ -1411,16 +1394,12 @@ resource "aws_lambda_function" "eventbridge_dlq_handler" {
   }
 }
 
-# Make Lambda auto process messages from DLQ
 resource "aws_lambda_event_source_mapping" "eventbridge_dlq_to_lambda" {
   event_source_arn = aws_sqs_queue.eventbridge_dlq.arn
   function_name    = aws_lambda_function.eventbridge_dlq_handler.arn
   batch_size       = 10
 }
 
-#---------New--------
-
-# Event rule for ecs task stop 
 resource "aws_cloudwatch_event_rule" "ecs_task_failed_rule" {
   name           = "ecs-task-failed-rule"
   description    = "Failed ingestion ECS tasks (STOPPED with non-zero exitCode)"
@@ -1445,7 +1424,6 @@ resource "aws_cloudwatch_event_rule" "ecs_task_failed_rule" {
   })
 }
 
-# Target for the Event
 resource "aws_cloudwatch_event_target" "ecs_task_failed_to_sqs" {
   rule      = aws_cloudwatch_event_rule.ecs_task_failed_rule.name
   target_id = "SendFailedIngestionTasksToSqs"

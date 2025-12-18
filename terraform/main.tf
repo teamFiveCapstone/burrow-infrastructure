@@ -130,7 +130,7 @@ resource "aws_ecs_task_definition" "management-api" {
   container_definitions = jsonencode([
     {
       name  = "management-api"
-      image = "docker.io/burrowai/management-api:RESOURCETAG"
+      image = "docker.io/burrowai/management-api:main"
       portMappings = [
         {
           containerPort = 3000
@@ -687,7 +687,7 @@ resource "aws_ecs_task_definition" "ingestion-terraform" {
   container_definitions = jsonencode([
     {
       name      = "ingestion-container"
-      image     = "docker.io/burrowai/ingestion-task:RESOURCETAG"
+      image     = "docker.io/burrowai/ingestion-task:MOVED"
       essential = true
       portMappings = [
         {
@@ -794,6 +794,14 @@ resource "aws_security_group" "tf_aurora_sg" {
 resource "aws_vpc_security_group_ingress_rule" "tf_aurora_from_ingestion" {
   security_group_id            = aws_security_group.tf_aurora_sg.id
   referenced_security_group_id = aws_security_group.ingestion_task_sg.id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "tf_aurora_from_dlq_lambda" {
+  security_group_id            = aws_security_group.tf_aurora_sg.id
+  referenced_security_group_id = aws_security_group.dlq_lambda_sg.id
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
@@ -931,7 +939,7 @@ resource "aws_ecs_task_definition" "query_api" {
   container_definitions = jsonencode([
     {
       name      = "query-api"
-      image     = "docker.io/burrowai/query-api:main"
+      image     = "docker.io/burrowai/query-api:TEST"
       essential = true
       portMappings = [
         {
@@ -1324,7 +1332,8 @@ resource "aws_iam_role_policy" "eventbridge_dlq_lambda_all" {
         ]
         Resource = [
           aws_secretsmanager_secret.origin_verify.arn,
-          aws_secretsmanager_secret.ingestion-api-token.arn
+          aws_secretsmanager_secret.ingestion-api-token.arn,
+          aws_secretsmanager_secret.aurora_db_password.arn
         ]
       },
       {
@@ -1348,10 +1357,10 @@ resource "aws_lambda_function" "eventbridge_dlq_handler" {
   role          = aws_iam_role.eventbridge_dlq_lambda_role.arn
 
   runtime = "python3.12"
-  handler = "eventbridge_dlq_handler.handler"
+  handler = "handler.handler"
 
-  filename         = "lambda/eventbridge_dlq_handler.zip"
-  source_code_hash = filebase64sha256("lambda/eventbridge_dlq_handler.zip")
+  filename         = "lambda/handler.zip"
+  source_code_hash = filebase64sha256("lambda/handler.zip")
 
   timeout     = 30
   memory_size = 256
@@ -1362,6 +1371,11 @@ resource "aws_lambda_function" "eventbridge_dlq_handler" {
       DOCS_API_PATH           = "/api/documents"
       INGESTION_API_TOKEN_ARN = aws_secretsmanager_secret.ingestion-api-token.arn
       ORIGIN_VERIFY_ARN       = aws_secretsmanager_secret.origin_verify.arn
+      DB_HOST                 = aws_rds_cluster.tf_aurora_pg.reader_endpoint
+      DB_PORT                 = "5432"
+      DB_NAME                 = "burrowdb"
+      DB_USER                 = "burrow_admin"
+      DB_PASSWORD_ARN         = aws_secretsmanager_secret.aurora_db_password.arn
     }
   }
 
@@ -1374,7 +1388,7 @@ resource "aws_lambda_function" "eventbridge_dlq_handler" {
 resource "aws_lambda_event_source_mapping" "eventbridge_dlq_to_lambda" {
   event_source_arn = aws_sqs_queue.eventbridge_dlq.arn
   function_name    = aws_lambda_function.eventbridge_dlq_handler.arn
-  batch_size       = 10
+  batch_size       = 8
 }
 
 resource "aws_cloudwatch_event_rule" "ecs_task_failed_rule" {
@@ -1404,6 +1418,29 @@ resource "aws_cloudwatch_event_rule" "ecs_task_failed_rule" {
 resource "aws_cloudwatch_event_target" "ecs_task_failed_to_sqs" {
   rule      = aws_cloudwatch_event_rule.ecs_task_failed_rule.name
   target_id = "SendFailedIngestionTasksToSqs"
+  arn       = aws_sqs_queue.eventbridge_dlq.arn
+}
+
+resource "aws_cloudwatch_event_rule" "ecs_task_provisioning_failed_rule" {
+  name           = "ecs-task-provisioning-failed-rule"
+  description    = "Capture ingestion tasks that fail to start (quota, capacity issues)"
+  event_bus_name = "default"
+
+  event_pattern = jsonencode({
+    "source" : ["aws.ecs"],
+    "detail-type" : ["ECS Task State Change"],
+    "detail" : {
+      "clusterArn" : [aws_ecs_cluster.management-api-cluster.arn],
+      "group" : ["family:ingestion-terraform"],
+      "lastStatus" : ["STOPPED"],
+      "stopCode" : ["TaskFailedToStart"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "ecs_task_provisioning_failed_to_sqs" {
+  rule      = aws_cloudwatch_event_rule.ecs_task_provisioning_failed_rule.name
+  target_id = "SendProvisioningFailuresToSqs"
   arn       = aws_sqs_queue.eventbridge_dlq.arn
 }
 

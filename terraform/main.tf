@@ -130,7 +130,7 @@ resource "aws_ecs_task_definition" "management-api" {
   container_definitions = jsonencode([
     {
       name  = "management-api"
-      image = "docker.io/burrowai/management-api:FIREFOX"
+      image = "docker.io/burrowai/management-api:main"
       portMappings = [
         {
           containerPort = 3000
@@ -681,7 +681,7 @@ resource "aws_ecs_task_definition" "ingestion-terraform" {
   container_definitions = jsonencode([
     {
       name      = "ingestion-container"
-      image     = "docker.io/burrowai/ingestion-task:MODULE"
+      image     = "docker.io/burrowai/ingestion-task:main"
       essential = true
       portMappings = [
         {
@@ -925,7 +925,7 @@ resource "aws_ecs_task_definition" "query_api" {
   container_definitions = jsonencode([
     {
       name      = "query-api"
-      image     = "docker.io/burrowai/query-api:FIX"
+      image     = "docker.io/burrowai/query-api:main"
       essential = true
       portMappings = [
         {
